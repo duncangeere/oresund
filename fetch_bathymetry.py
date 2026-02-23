@@ -4,9 +4,9 @@ Fetch Öresund bathymetry from EMODnet and save to data/.
 
 Source : EMODnet Bathymetry WCS, coverage emodnet:mean
 BBOX   : 11.95–13.35°E, 54.90–56.50°N  (EPSG:4326)
-Outputs: data/oresund_bathymetry.tif      (GeoTIFF, depth in metres)
-         data/oresund_bathymetry.csv      (longitude, latitude, depth_m)
-         data/oresund_coastline.geojson   (Natural Earth 1:10m coastlines)
+Outputs: data/oresund_bathymetry.tif      (GeoTIFF, raw depth in metres)
+         data/oresund_bathymetry_sea.tif  (GeoTIFF, land masked out)
+         data/oresund_land.geojson        (Natural Earth 1:10m land polygons)
 
 Resolution: 3508 × 4009 px — A3 portrait at 150 dpi, preserving the
 geographic degree aspect ratio (1.40° wide × 1.60° tall → w/h = 0.875).
@@ -18,10 +18,9 @@ import os
 import sys
 
 import numpy as np
-import pandas as pd
 import requests
 import rasterio
-import rasterio.transform
+from rasterio.mask import mask as rio_mask
 
 WCS_URL  = "https://ows.emodnet-bathymetry.eu/wcs"
 COVERAGE = "emodnet:mean"
@@ -30,21 +29,44 @@ BBOX     = "11.95,54.90,13.35,56.50"   # minX,minY,maxX,maxY  (2× original exte
 # A3 portrait at 150 dpi, degree aspect ratio preserved (1.40°/1.60° = 0.875)
 WIDTH, HEIGHT = 3508, 4009
 
-# Natural Earth 1:10m coastlines (public domain, hosted on GitHub)
-NE_COASTLINE_URL = (
+NODATA = -9999.0
+
+# Natural Earth 1:10m land polygons (public domain, hosted on GitHub)
+NE_LAND_URL = (
     "https://raw.githubusercontent.com/nvkelso/natural-earth-vector"
-    "/master/geojson/ne_10m_coastline.geojson"
+    "/master/geojson/ne_10m_land.geojson"
 )
 
 DATA_DIR      = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 TIFF_OUT      = os.path.join(DATA_DIR, "oresund_bathymetry.tif")
-CSV_OUT       = os.path.join(DATA_DIR, "oresund_bathymetry.csv")
-COAST_OUT     = os.path.join(DATA_DIR, "oresund_coastline.geojson")
+TIFF_SEA_OUT  = os.path.join(DATA_DIR, "oresund_bathymetry_sea.tif")
+LAND_OUT      = os.path.join(DATA_DIR, "oresund_land.geojson")
 
 
 def _bbox_tuple():
     parts = BBOX.split(",")
     return tuple(float(x) for x in parts)   # (min_lon, min_lat, max_lon, max_lat)
+
+
+def _overlaps_bbox(feature, min_lon, min_lat, max_lon, max_lat):
+    """True if the feature's bounding box overlaps the target bbox."""
+    geom = feature["geometry"]
+    coords = []
+    if geom["type"] == "Polygon":
+        for ring in geom["coordinates"]:
+            coords.extend(ring)
+    elif geom["type"] == "MultiPolygon":
+        for polygon in geom["coordinates"]:
+            for ring in polygon:
+                coords.extend(ring)
+    if not coords:
+        return False
+    lons = [c[0] for c in coords]
+    lats = [c[1] for c in coords]
+    return (
+        max(lons) >= min_lon and min(lons) <= max_lon
+        and max(lats) >= min_lat and min(lats) <= max_lat
+    )
 
 
 def main():
@@ -76,56 +98,43 @@ def main():
             f.write(chunk)
     print(f"Saved GeoTIFF → {TIFF_OUT}  ({os.path.getsize(TIFF_OUT)//1024} KB)")
 
-    # --- 2. Convert to CSV ---
+    # --- 2. Fetch Natural Earth land polygons and clip to bbox ---
+    print("Fetching Natural Earth 1:10m land polygons …")
+    rl = requests.get(NE_LAND_URL, timeout=120)
+    rl.raise_for_status()
+    land_geojson = rl.json()
+
+    land_features = [
+        f for f in land_geojson["features"]
+        if _overlaps_bbox(f, min_lon, min_lat, max_lon, max_lat)
+    ]
+    clipped_land = {"type": "FeatureCollection", "features": land_features}
+    with open(LAND_OUT, "w") as f:
+        json.dump(clipped_land, f)
+    print(f"Saved land polygons → {LAND_OUT}  ({len(land_features)} features)")
+
+    # --- 3. Mask land out of the raster (keep sea only) ---
+    print("Masking land cells …")
+    land_shapes = [f["geometry"] for f in land_features]
+
     with rasterio.open(TIFF_OUT) as ds:
-        depth = ds.read(1).astype(np.float64)
-        nodata = ds.nodata
-        h, w = depth.shape
-        rows, cols = np.mgrid[0:h, 0:w]
-        lons, lats = rasterio.transform.xy(ds.transform, rows.ravel(), cols.ravel())
-
-    df = pd.DataFrame({"longitude": lons, "latitude": lats, "depth_m": depth.ravel()})
-    if nodata is not None:
-        df = df[~np.isclose(df["depth_m"], nodata)]
-    else:
-        df = df[df["depth_m"] > -1e10]
-
-    df.to_csv(CSV_OUT, index=False, float_format="%.6f")
-    print(f"Saved CSV     → {CSV_OUT}  ({len(df):,} points)")
-
-    # --- 3. Fetch and clip coastline ---
-    print("Fetching Natural Earth 1:10m coastline …")
-    rc = requests.get(NE_COASTLINE_URL, timeout=120)
-    rc.raise_for_status()
-    geojson = rc.json()
-
-    def touches_bbox(feature):
-        """Return True if any coordinate in the feature falls inside the bbox."""
-        geom = feature["geometry"]
-        lines = (
-            [geom["coordinates"]]
-            if geom["type"] == "LineString"
-            else geom["coordinates"]   # MultiLineString
+        sea_image, sea_transform = rio_mask(
+            ds, land_shapes, invert=True, nodata=NODATA, filled=True
         )
-        return any(
-            min_lon <= c[0] <= max_lon and min_lat <= c[1] <= max_lat
-            for line in lines
-            for c in line
-        )
+        meta = ds.meta.copy()
 
-    clipped = {
-        "type": "FeatureCollection",
-        "features": [f for f in geojson["features"] if touches_bbox(f)],
-    }
+    meta.update({"nodata": NODATA, "transform": sea_transform,
+                 "width": sea_image.shape[2], "height": sea_image.shape[1]})
 
-    with open(COAST_OUT, "w") as f:
-        json.dump(clipped, f)
-    print(f"Saved coastline → {COAST_OUT}  ({len(clipped['features'])} features)")
+    with rasterio.open(TIFF_SEA_OUT, "w", **meta) as ds:
+        ds.write(sea_image)
+    print(f"Saved masked GeoTIFF → {TIFF_SEA_OUT}  ({os.path.getsize(TIFF_SEA_OUT)//1024} KB)")
 
     # --- 4. Summary ---
-    print(f"\ndepth_m  min={df['depth_m'].min():.1f}  "
-          f"max={df['depth_m'].max():.1f}  "
-          f"mean={df['depth_m'].mean():.1f}")
+    with rasterio.open(TIFF_SEA_OUT) as ds:
+        depth = ds.read(1).astype(np.float64)
+    sea = depth[~np.isclose(depth, NODATA)]
+    print(f"\ndepth_m  min={sea.min():.1f}  max={sea.max():.1f}  mean={sea.mean():.1f}")
 
 
 if __name__ == "__main__":
