@@ -6,7 +6,6 @@ Source : EMODnet Bathymetry WCS, coverage emodnet:mean
 BBOX   : 11.95–13.35°E, 54.90–56.50°N  (EPSG:4326)
 Outputs: data/oresund_bathymetry.tif      (GeoTIFF, raw depth in metres)
          data/oresund_bathymetry_sea.tif  (GeoTIFF, land masked out)
-         data/oresund_bathymetry.csv      (longitude, latitude, depth_m; sea only)
          data/oresund_land.geojson        (Natural Earth 1:10m land polygons)
 
 Resolution: 3508 × 4009 px — A3 portrait at 150 dpi, preserving the
@@ -19,10 +18,8 @@ import os
 import sys
 
 import numpy as np
-import pandas as pd
 import requests
 import rasterio
-import rasterio.transform
 from rasterio.mask import mask as rio_mask
 
 WCS_URL  = "https://ows.emodnet-bathymetry.eu/wcs"
@@ -43,7 +40,6 @@ NE_LAND_URL = (
 DATA_DIR      = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 TIFF_OUT      = os.path.join(DATA_DIR, "oresund_bathymetry.tif")
 TIFF_SEA_OUT  = os.path.join(DATA_DIR, "oresund_bathymetry_sea.tif")
-CSV_OUT       = os.path.join(DATA_DIR, "oresund_bathymetry.csv")
 LAND_OUT      = os.path.join(DATA_DIR, "oresund_land.geojson")
 
 
@@ -134,23 +130,11 @@ def main():
         ds.write(sea_image)
     print(f"Saved masked GeoTIFF → {TIFF_SEA_OUT}  ({os.path.getsize(TIFF_SEA_OUT)//1024} KB)")
 
-    # --- 4. Convert masked raster to CSV ---
+    # --- 4. Summary ---
     with rasterio.open(TIFF_SEA_OUT) as ds:
         depth = ds.read(1).astype(np.float64)
-        h, w = depth.shape
-        rows, cols = np.mgrid[0:h, 0:w]
-        lons, lats = rasterio.transform.xy(ds.transform, rows.ravel(), cols.ravel())
-
-    df = pd.DataFrame({"longitude": lons, "latitude": lats, "depth_m": depth.ravel()})
-    df = df[~np.isclose(df["depth_m"], NODATA)]
-
-    df.to_csv(CSV_OUT, index=False, float_format="%.6f")
-    print(f"Saved CSV     → {CSV_OUT}  ({len(df):,} points)")
-
-    # --- 5. Summary ---
-    print(f"\ndepth_m  min={df['depth_m'].min():.1f}  "
-          f"max={df['depth_m'].max():.1f}  "
-          f"mean={df['depth_m'].mean():.1f}")
+    sea = depth[~np.isclose(depth, NODATA)]
+    print(f"\ndepth_m  min={sea.min():.1f}  max={sea.max():.1f}  mean={sea.mean():.1f}")
 
 
 if __name__ == "__main__":
