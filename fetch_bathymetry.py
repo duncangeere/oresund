@@ -10,7 +10,10 @@ Outputs: data/oresund_bathymetry.tif      (GeoTIFF, raw depth in metres)
 
 Resolution: 3508 × 4009 px — A3 portrait at 150 dpi, preserving the
 geographic degree aspect ratio (1.40° wide × 1.60° tall → w/h = 0.875).
-EMODnet interpolates beyond its native 1/480° (~230 m) grid.
+Download is at EMODnet's native 1/480° (~230 m) grid (~672 × 768 px),
+then upsampled client-side to the output size with Lanczos resampling
+to avoid the staircase artefacts that server-side interpolation produces
+on narrow diagonal channels.
 """
 
 import io
@@ -23,11 +26,15 @@ import fiona
 import numpy as np
 import requests
 import rasterio
+from rasterio.io import MemoryFile
 from rasterio.mask import mask as rio_mask
+from rasterio.transform import from_bounds
+from rasterio.warp import reproject, Resampling
 
-WCS_URL  = "https://ows.emodnet-bathymetry.eu/wcs"
-COVERAGE = "emodnet:mean"
-BBOX     = "11.95,54.90,13.35,56.50"   # minX,minY,maxX,maxY  (2× original extent)
+WCS_URL    = "https://ows.emodnet-bathymetry.eu/wcs"
+COVERAGE   = "emodnet:mean"
+BBOX       = "11.95,54.90,13.35,56.50"   # minX,minY,maxX,maxY  (2× original extent)
+NATIVE_RES = 1 / 480                      # EMODnet native grid spacing in degrees (~230 m)
 
 # A3 portrait at 150 dpi, degree aspect ratio preserved (1.40°/1.60° = 0.875)
 WIDTH, HEIGHT = 3508, 4009
@@ -100,29 +107,57 @@ def main():
     os.makedirs(DATA_DIR, exist_ok=True)
     min_lon, min_lat, max_lon, max_lat = _bbox_tuple()
 
-    # --- 1. Download GeoTIFF from EMODnet WCS ---
+    # --- 1. Download GeoTIFF from EMODnet WCS at native resolution ---
+    native_w = round((max_lon - min_lon) / NATIVE_RES)
+    native_h = round((max_lat - min_lat) / NATIVE_RES)
     params = {
-        "service":       "WCS",
-        "version":       "1.0.0",
-        "request":       "GetCoverage",
-        "coverage":      COVERAGE,
-        "crs":           "EPSG:4326",
-        "BBOX":          BBOX,
-        "format":        "image/tiff",
-        "interpolation": "bicubic",
-        "width":         WIDTH,
-        "height":        HEIGHT,
+        "service":  "WCS",
+        "version":  "1.0.0",
+        "request":  "GetCoverage",
+        "coverage": COVERAGE,
+        "crs":      "EPSG:4326",
+        "BBOX":     BBOX,
+        "format":   "image/tiff",
+        "width":    native_w,
+        "height":   native_h,
     }
-    print(f"Fetching {COVERAGE} from EMODnet WCS  ({WIDTH} × {HEIGHT} px) …")
+    print(f"Fetching {COVERAGE} from EMODnet WCS at native res  ({native_w} × {native_h} px) …")
     r = requests.get(WCS_URL, params=params, timeout=180, stream=True)
 
     content_type = r.headers.get("Content-Type", "")
     if r.status_code != 200 or "xml" in content_type.lower():
         sys.exit(f"WCS error (HTTP {r.status_code}):\n{r.text[:500]}")
 
-    with open(TIFF_OUT, "wb") as f:
-        for chunk in r.iter_content(65536):
-            f.write(chunk)
+    raw_bytes = io.BytesIO()
+    for chunk in r.iter_content(65536):
+        raw_bytes.write(chunk)
+    raw_bytes.seek(0)
+
+    # --- 1b. Upsample to output resolution using Lanczos ---
+    print(f"Resampling to {WIDTH} × {HEIGHT} px with Lanczos …")
+    dst_transform = from_bounds(min_lon, min_lat, max_lon, max_lat, WIDTH, HEIGHT)
+    with MemoryFile(raw_bytes) as memfile:
+        with memfile.open() as src:
+            src_meta = src.meta.copy()
+            native_arr = src.read(1)
+
+    dst_arr = np.empty((HEIGHT, WIDTH), dtype=src_meta["dtype"])
+    reproject(
+        source=native_arr,
+        destination=dst_arr,
+        src_transform=src_meta["transform"],
+        src_crs=src_meta["crs"],
+        dst_transform=dst_transform,
+        dst_crs=src_meta["crs"],
+        src_nodata=src_meta.get("nodata"),
+        dst_nodata=src_meta.get("nodata"),
+        resampling=Resampling.lanczos,
+    )
+
+    out_meta = src_meta.copy()
+    out_meta.update({"width": WIDTH, "height": HEIGHT, "transform": dst_transform})
+    with rasterio.open(TIFF_OUT, "w", **out_meta) as ds:
+        ds.write(dst_arr, 1)
     print(f"Saved GeoTIFF → {TIFF_OUT}  ({os.path.getsize(TIFF_OUT)//1024} KB)")
 
     # --- 2. Fetch/cache GSHHG full-resolution land polygons and clip to bbox ---
