@@ -3,15 +3,17 @@
 Fetch Öresund bathymetry from EMODnet and save to data/.
 
 Source : EMODnet Bathymetry WCS, coverage emodnet:mean
-BBOX   : 12.30–13.00°E, 55.30–56.10°N  (EPSG:4326)
-Outputs: data/oresund_bathymetry.tif   (GeoTIFF, depth in metres)
-         data/oresund_bathymetry.csv   (longitude, latitude, depth_m)
+BBOX   : 11.95–13.35°E, 54.90–56.50°N  (EPSG:4326)
+Outputs: data/oresund_bathymetry.tif      (GeoTIFF, depth in metres)
+         data/oresund_bathymetry.csv      (longitude, latitude, depth_m)
+         data/oresund_coastline.geojson   (Natural Earth 1:10m coastlines)
 
-Resolution: 3508 × 4009 px — A3 portrait at 300 dpi, preserving the
-geographic degree aspect ratio (0.70° wide × 0.80° tall → w/h = 0.875).
+Resolution: 3508 × 4009 px — A3 portrait at 150 dpi, preserving the
+geographic degree aspect ratio (1.40° wide × 1.60° tall → w/h = 0.875).
 EMODnet interpolates beyond its native 1/480° (~230 m) grid.
 """
 
+import json
 import os
 import sys
 
@@ -23,18 +25,31 @@ import rasterio.transform
 
 WCS_URL  = "https://ows.emodnet-bathymetry.eu/wcs"
 COVERAGE = "emodnet:mean"
-BBOX     = "12.30,55.30,13.00,56.10"   # minX,minY,maxX,maxY
+BBOX     = "11.95,54.90,13.35,56.50"   # minX,minY,maxX,maxY  (2× original extent)
 
-# A3 portrait at 300 dpi, degree aspect ratio preserved (0.70°/0.80° = 0.875)
+# A3 portrait at 150 dpi, degree aspect ratio preserved (1.40°/1.60° = 0.875)
 WIDTH, HEIGHT = 3508, 4009
 
-DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
-TIFF_OUT = os.path.join(DATA_DIR, "oresund_bathymetry.tif")
-CSV_OUT  = os.path.join(DATA_DIR, "oresund_bathymetry.csv")
+# Natural Earth 1:10m coastlines (public domain, hosted on GitHub)
+NE_COASTLINE_URL = (
+    "https://raw.githubusercontent.com/nvkelso/natural-earth-vector"
+    "/master/geojson/ne_10m_coastline.geojson"
+)
+
+DATA_DIR      = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+TIFF_OUT      = os.path.join(DATA_DIR, "oresund_bathymetry.tif")
+CSV_OUT       = os.path.join(DATA_DIR, "oresund_bathymetry.csv")
+COAST_OUT     = os.path.join(DATA_DIR, "oresund_coastline.geojson")
+
+
+def _bbox_tuple():
+    parts = BBOX.split(",")
+    return tuple(float(x) for x in parts)   # (min_lon, min_lat, max_lon, max_lat)
 
 
 def main():
     os.makedirs(DATA_DIR, exist_ok=True)
+    min_lon, min_lat, max_lon, max_lat = _bbox_tuple()
 
     # --- 1. Download GeoTIFF from EMODnet WCS ---
     params = {
@@ -54,9 +69,7 @@ def main():
 
     content_type = r.headers.get("Content-Type", "")
     if r.status_code != 200 or "xml" in content_type.lower():
-        sys.exit(
-            f"WCS error (HTTP {r.status_code}):\n{r.text[:500]}"
-        )
+        sys.exit(f"WCS error (HTTP {r.status_code}):\n{r.text[:500]}")
 
     with open(TIFF_OUT, "wb") as f:
         for chunk in r.iter_content(65536):
@@ -80,7 +93,36 @@ def main():
     df.to_csv(CSV_OUT, index=False, float_format="%.6f")
     print(f"Saved CSV     → {CSV_OUT}  ({len(df):,} points)")
 
-    # --- 3. Summary ---
+    # --- 3. Fetch and clip coastline ---
+    print("Fetching Natural Earth 1:10m coastline …")
+    rc = requests.get(NE_COASTLINE_URL, timeout=120)
+    rc.raise_for_status()
+    geojson = rc.json()
+
+    def touches_bbox(feature):
+        """Return True if any coordinate in the feature falls inside the bbox."""
+        geom = feature["geometry"]
+        lines = (
+            [geom["coordinates"]]
+            if geom["type"] == "LineString"
+            else geom["coordinates"]   # MultiLineString
+        )
+        return any(
+            min_lon <= c[0] <= max_lon and min_lat <= c[1] <= max_lat
+            for line in lines
+            for c in line
+        )
+
+    clipped = {
+        "type": "FeatureCollection",
+        "features": [f for f in geojson["features"] if touches_bbox(f)],
+    }
+
+    with open(COAST_OUT, "w") as f:
+        json.dump(clipped, f)
+    print(f"Saved coastline → {COAST_OUT}  ({len(clipped['features'])} features)")
+
+    # --- 4. Summary ---
     print(f"\ndepth_m  min={df['depth_m'].min():.1f}  "
           f"max={df['depth_m'].max():.1f}  "
           f"mean={df['depth_m'].mean():.1f}")
