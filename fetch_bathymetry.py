@@ -6,6 +6,10 @@ Source : EMODnet Bathymetry WCS, coverage emodnet:mean
 BBOX   : 12.30–13.00°E, 55.30–56.10°N  (EPSG:4326)
 Outputs: data/oresund_bathymetry.tif   (GeoTIFF, depth in metres)
          data/oresund_bathymetry.csv   (longitude, latitude, depth_m)
+
+Resolution: 3508 × 4009 px — A3 portrait at 300 dpi, preserving the
+geographic degree aspect ratio (0.70° wide × 0.80° tall → w/h = 0.875).
+EMODnet interpolates beyond its native 1/480° (~230 m) grid.
 """
 
 import os
@@ -17,14 +21,16 @@ import requests
 import rasterio
 import rasterio.transform
 
-WCS_URL    = "https://ows.emodnet-bathymetry.eu/wcs"
-COVERAGE   = "emodnet:mean"
-BBOX       = "12.30,55.30,13.00,56.10"   # minX,minY,maxX,maxY
-RESOLUTION = 0.00208333                   # ≈1/480°, native EMODnet DTM res
+WCS_URL  = "https://ows.emodnet-bathymetry.eu/wcs"
+COVERAGE = "emodnet:mean"
+BBOX     = "12.30,55.30,13.00,56.10"   # minX,minY,maxX,maxY
 
-DATA_DIR   = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
-TIFF_OUT   = os.path.join(DATA_DIR, "oresund_bathymetry.tif")
-CSV_OUT    = os.path.join(DATA_DIR, "oresund_bathymetry.csv")
+# A3 portrait at 300 dpi, degree aspect ratio preserved (0.70°/0.80° = 0.875)
+WIDTH, HEIGHT = 3508, 4009
+
+DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+TIFF_OUT = os.path.join(DATA_DIR, "oresund_bathymetry.tif")
+CSV_OUT  = os.path.join(DATA_DIR, "oresund_bathymetry.csv")
 
 
 def main():
@@ -39,11 +45,11 @@ def main():
         "crs":           "EPSG:4326",
         "BBOX":          BBOX,
         "format":        "image/tiff",
-        "interpolation": "nearest",
-        "resx":          RESOLUTION,
-        "resy":          RESOLUTION,
+        "interpolation": "bilinear",
+        "width":         WIDTH,
+        "height":        HEIGHT,
     }
-    print(f"Fetching {COVERAGE} from EMODnet WCS …")
+    print(f"Fetching {COVERAGE} from EMODnet WCS  ({WIDTH} × {HEIGHT} px) …")
     r = requests.get(WCS_URL, params=params, timeout=180, stream=True)
 
     content_type = r.headers.get("Content-Type", "")
