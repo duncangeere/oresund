@@ -10,7 +10,10 @@ Single script: `fetch_bathymetry.py`
 ### Pipeline
 
 1. **Bathymetry raster** — downloaded from EMODnet WCS (`emodnet:mean` coverage)
-   as a GeoTIFF at A3/150 dpi resolution (3508 × 4009 px).
+   at native resolution (~672 × 768 px at 1/480°), then **Lanczos resampled**
+   client-side to A3/150 dpi output size (3508 × 4009 px). Lanczos is used
+   instead of server-side interpolation to avoid staircase artefacts on narrow
+   diagonal channels.
 2. **Land polygons** — GSHHG full-resolution Level 1 shapefile (`GSHHS_f_L1`)
    downloaded from NOAA (~150 MB zip), extracted and **cached** in `data/`.
    Re-runs use the cached copy.
@@ -26,18 +29,25 @@ Single script: `fetch_bathymetry.py`
 |------|-------------|
 | `oresund_bathymetry.tif` | Raw depth raster (metres) |
 | `oresund_bathymetry_sea.tif` | Land-masked depth raster |
-| `oresund_land.geojson` | Clipped land polygons |
+| `oresund_land.geojson` | Clipped land polygons (GSHHG) |
+| `oresund_populated_places.geojson` | Point features: name, pop_max, pop_min, adm0_a3, featurecla, scalerank |
+| `oresund_urban_areas.geojson` | Urban area polygons clipped to GSHHG land boundary |
 | `GSHHS_f_L1.*` | Cached GSHHG shapefile files |
+| `ne_10m_populated_places.*` | Cached Natural Earth populated places shapefile |
+| `ne_10m_urban_areas.*` | Cached Natural Earth urban areas shapefile |
 
 ## Dependencies
 
 ```
 numpy>=1.24
-pandas>=2.0
 requests>=2.31
 rasterio>=1.3
 fiona>=1.9
+shapely>=2.0
 ```
+
+Note: `pandas>=2.0` is listed in `requirements.txt` but is not used by the
+current script.
 
 Install: `pip install -r requirements.txt`
 
@@ -61,7 +71,14 @@ First run downloads ~150 MB GSHHG zip. Subsequent runs skip that step.
 ## Data sources
 
 - **EMODnet Bathymetry WCS**: `https://ows.emodnet-bathymetry.eu/wcs`
-  Native resolution ~1/480° (~230 m); bilinear-interpolated to output size.
+  Native resolution ~1/480° (~230 m); Lanczos resampled to output size.
 - **GSHHG**: `https://www.ngdc.noaa.gov/mgg/shorelines/gshhs.html`
   Version 2.3.7, full resolution, Level 1 (ocean/land boundary).
   Previously used Natural Earth 1:10m land polygons.
+- **Natural Earth `ne_10m_populated_places`**: point layer, `POP_MAX` attribute
+  used for population-scaled circles. Cached in `data/`.
+  <https://www.naturalearthdata.com/downloads/10m-cultural-vectors/10m-populated-places/>
+- **Natural Earth `ne_10m_urban_areas`**: urban footprint polygons, clipped to
+  GSHHG land boundary using shapely intersection so they don't bleed onto water.
+  Cached in `data/`.
+  <https://www.naturalearthdata.com/downloads/10m-cultural-vectors/10m-urban-area/>
