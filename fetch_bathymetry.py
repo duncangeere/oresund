@@ -109,7 +109,7 @@ def main():
         "crs":           "EPSG:4326",
         "BBOX":          BBOX,
         "format":        "image/tiff",
-        "interpolation": "bilinear",
+        "interpolation": "bicubic",
         "width":         WIDTH,
         "height":        HEIGHT,
     }
