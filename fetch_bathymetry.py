@@ -4,9 +4,11 @@ Fetch Öresund bathymetry from EMODnet and save to data/.
 
 Source : EMODnet Bathymetry WCS, coverage emodnet:mean
 BBOX   : 11.95–13.35°E, 54.90–56.50°N  (EPSG:4326)
-Outputs: data/oresund_bathymetry.tif      (GeoTIFF, raw depth in metres)
-         data/oresund_bathymetry_sea.tif  (GeoTIFF, land masked out)
-         data/oresund_land.geojson        (GSHHG full-resolution land polygons)
+Outputs: data/oresund_bathymetry.tif          (GeoTIFF, raw depth in metres)
+         data/oresund_bathymetry_sea.tif      (GeoTIFF, land masked out)
+         data/oresund_land.geojson            (GSHHG full-resolution land polygons)
+         data/oresund_populated_places.geojson (NE point features with population)
+         data/oresund_urban_areas.geojson     (NE urban polygons clipped to GSHHG land)
 
 Resolution: 3508 × 4009 px — A3 portrait at 150 dpi, preserving the
 geographic degree aspect ratio (1.40° wide × 1.60° tall → w/h = 0.875).
@@ -30,6 +32,8 @@ from rasterio.io import MemoryFile
 from rasterio.mask import mask as rio_mask
 from rasterio.transform import from_bounds
 from rasterio.warp import reproject, Resampling
+from shapely.geometry import mapping, shape
+from shapely.ops import unary_union
 
 WCS_URL    = "https://ows.emodnet-bathymetry.eu/wcs"
 COVERAGE   = "emodnet:mean"
@@ -49,11 +53,26 @@ GSHHG_ZIP_URL = (
     "gshhg-shp-2.3.7.zip"
 )
 
+# Natural Earth 1:10m cultural vectors
+# https://www.naturalearthdata.com/downloads/10m-cultural-vectors/
+NE_POPULATED_PLACES_URL = (
+    "https://naciscdn.org/naturalearth/10m/cultural/"
+    "ne_10m_populated_places.zip"
+)
+NE_URBAN_AREAS_URL = (
+    "https://naciscdn.org/naturalearth/10m/cultural/"
+    "ne_10m_urban_areas.zip"
+)
+
 DATA_DIR     = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 TIFF_OUT     = os.path.join(DATA_DIR, "oresund_bathymetry.tif")
 TIFF_SEA_OUT = os.path.join(DATA_DIR, "oresund_bathymetry_sea.tif")
 LAND_OUT     = os.path.join(DATA_DIR, "oresund_land.geojson")
 GSHHG_SHP    = os.path.join(DATA_DIR, "GSHHS_f_L1.shp")
+NE_PP_SHP    = os.path.join(DATA_DIR, "ne_10m_populated_places.shp")
+NE_UA_SHP    = os.path.join(DATA_DIR, "ne_10m_urban_areas.shp")
+PLACES_OUT   = os.path.join(DATA_DIR, "oresund_populated_places.geojson")
+URBAN_OUT    = os.path.join(DATA_DIR, "oresund_urban_areas.geojson")
 
 
 def _bbox_tuple():
@@ -79,6 +98,29 @@ def _overlaps_bbox(geom, min_lon, min_lat, max_lon, max_lat):
         max(lons) >= min_lon and min(lons) <= max_lon
         and max(lats) >= min_lat and min(lats) <= max_lat
     )
+
+
+def _ensure_ne(zip_url, shp_path, label, size_hint):
+    """Download and extract a Natural Earth shapefile zip to DATA_DIR if not cached."""
+    if os.path.exists(shp_path):
+        print(f"Using cached {label}: {shp_path}")
+        return
+    print(f"Downloading {label} ({size_hint}) …")
+    r = requests.get(zip_url, timeout=120, stream=True)
+    r.raise_for_status()
+    zip_data = io.BytesIO()
+    for chunk in r.iter_content(65536):
+        zip_data.write(chunk)
+    zip_data.seek(0)
+    stem = os.path.splitext(os.path.basename(shp_path))[0]
+    with zipfile.ZipFile(zip_data) as zf:
+        for member in zf.namelist():
+            basename = os.path.basename(member)
+            if basename.startswith(stem + "."):
+                target = os.path.join(DATA_DIR, basename)
+                with zf.open(member) as src, open(target, "wb") as dst:
+                    dst.write(src.read())
+    print(f"Extracted {stem} files → {DATA_DIR}")
 
 
 def _ensure_gshhg():
@@ -195,7 +237,61 @@ def main():
         ds.write(sea_image)
     print(f"Saved masked GeoTIFF → {TIFF_SEA_OUT}  ({os.path.getsize(TIFF_SEA_OUT)//1024} KB)")
 
-    # --- 4. Summary ---
+    # --- 4. Natural Earth populated places (point GeoJSON with attributes) ---
+    _ensure_ne(
+        NE_POPULATED_PLACES_URL, NE_PP_SHP,
+        "Natural Earth populated places", "~8 MB",
+    )
+    print("Reading and filtering populated places …")
+    place_features = []
+    with fiona.open(NE_PP_SHP) as src:
+        for feat in src:
+            geom = feat.geometry.__geo_interface__
+            lon, lat = geom["coordinates"]
+            if min_lon <= lon <= max_lon and min_lat <= lat <= max_lat:
+                p = feat.properties
+                place_features.append({
+                    "type": "Feature",
+                    "geometry": geom,
+                    "properties": {
+                        "name":       p.get("NAME"),
+                        "pop_max":    p.get("POP_MAX"),
+                        "pop_min":    p.get("POP_MIN"),
+                        "adm0_a3":    p.get("ADM0_A3"),
+                        "featurecla": p.get("FEATURECLA"),
+                        "scalerank":  p.get("SCALERANK"),
+                    },
+                })
+    with open(PLACES_OUT, "w") as f:
+        json.dump({"type": "FeatureCollection", "features": place_features}, f)
+    print(f"Saved populated places → {PLACES_OUT}  ({len(place_features)} features)")
+
+    # --- 5. Natural Earth urban areas (polygon GeoJSON, clipped to GSHHG land) ---
+    _ensure_ne(
+        NE_URBAN_AREAS_URL, NE_UA_SHP,
+        "Natural Earth urban areas", "~3 MB",
+    )
+    print("Reading, clipping and intersecting urban areas with land …")
+    land_union = unary_union([shape(g) for g in land_shapes])
+    urban_features = []
+    with fiona.open(NE_UA_SHP) as src:
+        for feat in src:
+            geom = feat.geometry.__geo_interface__
+            if not _overlaps_bbox(geom, min_lon, min_lat, max_lon, max_lat):
+                continue
+            clipped = shape(geom).intersection(land_union)
+            if clipped.is_empty:
+                continue
+            urban_features.append({
+                "type": "Feature",
+                "geometry": mapping(clipped),
+                "properties": {},
+            })
+    with open(URBAN_OUT, "w") as f:
+        json.dump({"type": "FeatureCollection", "features": urban_features}, f)
+    print(f"Saved urban areas → {URBAN_OUT}  ({len(urban_features)} features)")
+
+    # --- 6. Summary ---
     with rasterio.open(TIFF_SEA_OUT) as ds:
         depth = ds.read(1).astype(np.float64)
     sea = depth[~np.isclose(depth, NODATA) & ~np.isnan(depth)]
