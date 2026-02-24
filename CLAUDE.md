@@ -31,10 +31,10 @@ Single script: `fetch_bathymetry.py`
 | `oresund_bathymetry_sea.tif` | Land-masked depth raster |
 | `oresund_land.geojson` | Clipped land polygons (GSHHG) |
 | `oresund_populated_places.geojson` | Point features: name, pop_max, pop_min, adm0_a3, featurecla, scalerank |
-| `oresund_urban_areas.geojson` | Urban area polygons clipped to GSHHG land boundary |
+| `oresund_urban_areas.geojson` | OSM administrative city/town boundaries, clipped to GSHHG land; properties: name, place, admin_level |
 | `GSHHS_f_L1.*` | Cached GSHHG shapefile files |
 | `ne_10m_populated_places.*` | Cached Natural Earth populated places shapefile |
-| `ne_10m_urban_areas.*` | Cached Natural Earth urban areas shapefile |
+| `osm_urban_boundaries.geojson` | Cached raw Overpass API response (FeatureCollection) |
 
 ## Dependencies
 
@@ -78,7 +78,7 @@ First run downloads ~150 MB GSHHG zip. Subsequent runs skip that step.
 - **Natural Earth `ne_10m_populated_places`**: point layer, `POP_MAX` attribute
   used for population-scaled circles. Cached in `data/`.
   <https://www.naturalearthdata.com/downloads/10m-cultural-vectors/10m-populated-places/>
-- **Natural Earth `ne_10m_urban_areas`**: urban footprint polygons, clipped to
-  GSHHG land boundary using shapely intersection so they don't bleed onto water.
-  Cached in `data/`.
-  <https://www.naturalearthdata.com/downloads/10m-cultural-vectors/10m-urban-area/>
+- **OpenStreetMap via Overpass API** (`https://overpass-api.de/api/interpreter`):
+  `boundary=administrative` + `place~"^(city|town)$"` relations within the bbox.
+  Returns GeoJSON directly (`[out:geojson]`). Clipped to GSHHG land boundary.
+  Cached in `data/osm_urban_boundaries.geojson`; delete to refresh.

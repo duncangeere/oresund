@@ -24,7 +24,8 @@ All files are written to `data/` (git-ignored).
   as the reference coastline for clipping
 - **[Natural Earth](https://www.naturalearthdata.com/)** 1:10m cultural vectors:
   - `ne_10m_populated_places` — point layer with `POP_MAX` population estimates
-  - `ne_10m_urban_areas` — urban footprint polygons
+- **[OpenStreetMap](https://www.openstreetmap.org/)** via [Overpass API](https://overpass-api.de/):
+  administrative city/town boundary relations, higher resolution than Natural Earth
 
 ## Coverage
 
