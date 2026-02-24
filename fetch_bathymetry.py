@@ -8,7 +8,6 @@ Outputs: data/oresund_bathymetry.tif          (GeoTIFF, raw depth in metres)
          data/oresund_bathymetry_sea.tif      (GeoTIFF, land masked out)
          data/oresund_land.geojson            (GSHHG full-resolution land polygons)
          data/oresund_populated_places.geojson (NE point features with population)
-         data/oresund_urban_areas.geojson     (OSM administrative city/town boundaries)
 
 Resolution: 3508 × 4009 px — A3 portrait at 150 dpi, preserving the
 geographic degree aspect ratio (1.40° wide × 1.60° tall → w/h = 0.875).
@@ -32,8 +31,8 @@ from rasterio.io import MemoryFile
 from rasterio.mask import mask as rio_mask
 from rasterio.transform import from_bounds
 from rasterio.warp import reproject, Resampling
-from shapely.geometry import mapping, shape
-from shapely.ops import unary_union
+from shapely.geometry import shape  # mapping unused while urban areas are commented out
+# from shapely.ops import unary_union
 
 WCS_URL    = "https://ows.emodnet-bathymetry.eu/wcs"
 COVERAGE   = "emodnet:mean"
@@ -59,17 +58,17 @@ NE_POPULATED_PLACES_URL = (
     "https://naciscdn.org/naturalearth/10m/cultural/"
     "ne_10m_populated_places.zip"
 )
-OVERPASS_URL = "https://overpass-api.de/api/interpreter"
+# OVERPASS_URL = "https://overpass-api.de/api/interpreter"
 
 DATA_DIR     = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 TIFF_OUT     = os.path.join(DATA_DIR, "oresund_bathymetry.tif")
 TIFF_SEA_OUT = os.path.join(DATA_DIR, "oresund_bathymetry_sea.tif")
 LAND_OUT     = os.path.join(DATA_DIR, "oresund_land.geojson")
 GSHHG_SHP    = os.path.join(DATA_DIR, "GSHHS_f_L1.shp")
-NE_PP_SHP       = os.path.join(DATA_DIR, "ne_10m_populated_places.shp")
-OSM_URBAN_CACHE = os.path.join(DATA_DIR, "osm_urban_boundaries.geojson")
-PLACES_OUT      = os.path.join(DATA_DIR, "oresund_populated_places.geojson")
-URBAN_OUT       = os.path.join(DATA_DIR, "oresund_urban_areas.geojson")
+NE_PP_SHP    = os.path.join(DATA_DIR, "ne_10m_populated_places.shp")
+# OSM_URBAN_CACHE = os.path.join(DATA_DIR, "osm_urban_boundaries.geojson")
+PLACES_OUT   = os.path.join(DATA_DIR, "oresund_populated_places.geojson")
+# URBAN_OUT    = os.path.join(DATA_DIR, "oresund_urban_areas.geojson")
 
 
 def _bbox_tuple():
@@ -142,35 +141,35 @@ def _ensure_gshhg():
     print(f"Extracted GSHHS_f_L1 files → {DATA_DIR}")
 
 
-def _fetch_osm_urban():
-    """Fetch OSM administrative city/town boundaries via Overpass API.
-
-    Uses [out:geojson] so Overpass returns a ready-made FeatureCollection.
-    Result is cached to DATA_DIR as osm_urban_boundaries.geojson.
-    """
-    if os.path.exists(OSM_URBAN_CACHE):
-        print(f"Using cached OSM urban boundaries: {OSM_URBAN_CACHE}")
-        with open(OSM_URBAN_CACHE) as f:
-            return json.load(f)
-
-    min_lon, min_lat, max_lon, max_lat = _bbox_tuple()
-    # Overpass bbox order: south,west,north,east
-    bbox_str = f"{min_lat},{min_lon},{max_lat},{max_lon}"
-    query = (
-        f"[out:geojson][timeout:60][bbox:{bbox_str}];\n"
-        "(\n"
-        '  relation[boundary=administrative][place~"^(city|town)$"];\n'
-        ");\n"
-        "out geom;"
-    )
-    print("Fetching OSM administrative boundaries from Overpass API …")
-    r = requests.post(OVERPASS_URL, data={"data": query}, timeout=90)
-    r.raise_for_status()
-    data = r.json()
-    with open(OSM_URBAN_CACHE, "w") as f:
-        json.dump(data, f)
-    print(f"Cached OSM urban boundaries → {OSM_URBAN_CACHE}")
-    return data
+# def _fetch_osm_urban():
+#     """Fetch OSM administrative city/town boundaries via Overpass API.
+#
+#     Uses [out:geojson] so Overpass returns a ready-made FeatureCollection.
+#     Result is cached to DATA_DIR as osm_urban_boundaries.geojson.
+#     """
+#     if os.path.exists(OSM_URBAN_CACHE):
+#         print(f"Using cached OSM urban boundaries: {OSM_URBAN_CACHE}")
+#         with open(OSM_URBAN_CACHE) as f:
+#             return json.load(f)
+#
+#     min_lon, min_lat, max_lon, max_lat = _bbox_tuple()
+#     # Overpass bbox order: south,west,north,east
+#     bbox_str = f"{min_lat},{min_lon},{max_lat},{max_lon}"
+#     query = (
+#         f"[out:geojson][timeout:60][bbox:{bbox_str}];\n"
+#         "(\n"
+#         '  relation[boundary=administrative][place~"^(city|town)$"];\n'
+#         ");\n"
+#         "out geom;"
+#     )
+#     print("Fetching OSM administrative boundaries from Overpass API …")
+#     r = requests.post(OVERPASS_URL, data={"data": query}, timeout=90)
+#     r.raise_for_status()
+#     data = r.json()
+#     with open(OSM_URBAN_CACHE, "w") as f:
+#         json.dump(data, f)
+#     print(f"Cached OSM urban boundaries → {OSM_URBAN_CACHE}")
+#     return data
 
 
 def main():
@@ -295,33 +294,34 @@ def main():
     print(f"Saved populated places → {PLACES_OUT}  ({len(place_features)} features)")
 
     # --- 5. OSM administrative city/town boundaries (clipped to GSHHG land) ---
-    osm_urban = _fetch_osm_urban()
-    print("Intersecting OSM urban boundaries with GSHHG land …")
-    land_union = unary_union([shape(g) for g in land_shapes])
-    urban_features = []
-    for feat in osm_urban.get("features", []):
-        geom = feat.get("geometry")
-        if geom is None:
-            continue
-        try:
-            clipped = shape(geom).intersection(land_union)
-        except Exception:
-            continue
-        if clipped.is_empty:
-            continue
-        props = feat.get("properties") or {}
-        urban_features.append({
-            "type": "Feature",
-            "geometry": mapping(clipped),
-            "properties": {
-                "name":        props.get("name"),
-                "place":       props.get("place"),
-                "admin_level": props.get("admin_level"),
-            },
-        })
-    with open(URBAN_OUT, "w") as f:
-        json.dump({"type": "FeatureCollection", "features": urban_features}, f)
-    print(f"Saved urban areas → {URBAN_OUT}  ({len(urban_features)} features)")
+    # Commented out: approach not working. Replace with tätorter point data.
+    # osm_urban = _fetch_osm_urban()
+    # print("Intersecting OSM urban boundaries with GSHHG land …")
+    # land_union = unary_union([shape(g) for g in land_shapes])
+    # urban_features = []
+    # for feat in osm_urban.get("features", []):
+    #     geom = feat.get("geometry")
+    #     if geom is None:
+    #         continue
+    #     try:
+    #         clipped = shape(geom).intersection(land_union)
+    #     except Exception:
+    #         continue
+    #     if clipped.is_empty:
+    #         continue
+    #     props = feat.get("properties") or {}
+    #     urban_features.append({
+    #         "type": "Feature",
+    #         "geometry": mapping(clipped),
+    #         "properties": {
+    #             "name":        props.get("name"),
+    #             "place":       props.get("place"),
+    #             "admin_level": props.get("admin_level"),
+    #         },
+    #     })
+    # with open(URBAN_OUT, "w") as f:
+    #     json.dump({"type": "FeatureCollection", "features": urban_features}, f)
+    # print(f"Saved urban areas → {URBAN_OUT}  ({len(urban_features)} features)")
 
     # --- 6. Summary ---
     with rasterio.open(TIFF_SEA_OUT) as ds:
