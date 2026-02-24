@@ -31,10 +31,10 @@ Single script: `fetch_bathymetry.py`
 | `oresund_bathymetry_sea.tif` | Land-masked depth raster |
 | `oresund_land.geojson` | Clipped land polygons (GSHHG) |
 | `oresund_populated_places.geojson` | Point features: name, pop_max, pop_min, adm0_a3, featurecla, scalerank |
-| `oresund_urban_areas.geojson` | OSM administrative city/town boundaries, clipped to GSHHG land; properties: name, place, admin_level |
+| `oresund_tatort_points.geojson` | GeoNames SE+DK populated place points; properties: name, population, country_code, feature_code |
 | `GSHHS_f_L1.*` | Cached GSHHG shapefile files |
 | `ne_10m_populated_places.*` | Cached Natural Earth populated places shapefile |
-| `osm_urban_boundaries.geojson` | Cached raw Overpass API response (FeatureCollection) |
+| `SE.txt` / `DK.txt` | Cached GeoNames country TSV dumps |
 
 ## Dependencies
 
@@ -78,7 +78,8 @@ First run downloads ~150 MB GSHHG zip. Subsequent runs skip that step.
 - **Natural Earth `ne_10m_populated_places`**: point layer, `POP_MAX` attribute
   used for population-scaled circles. Cached in `data/`.
   <https://www.naturalearthdata.com/downloads/10m-cultural-vectors/10m-populated-places/>
-- **OpenStreetMap via Overpass API** (`https://overpass-api.de/api/interpreter`):
+- **GeoNames** (`https://download.geonames.org/export/dump/`): country TSV dumps
+  for SE and DK. Feature class P, excluding PPLX (section of place), population > 0.
+  Properties: name, population, country_code, feature_code. Cached as `SE.txt` / `DK.txt`.
+- **OpenStreetMap via Overpass API** (commented out — approach not working):
   `boundary=administrative` + `place~"^(city|town)$"` relations within the bbox.
-  Returns GeoJSON directly (`[out:geojson]`). Clipped to GSHHG land boundary.
-  Cached in `data/osm_urban_boundaries.geojson`; delete to refresh.
