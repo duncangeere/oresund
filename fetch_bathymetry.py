@@ -32,8 +32,6 @@ from rasterio.io import MemoryFile
 from rasterio.mask import mask as rio_mask
 from rasterio.transform import from_bounds
 from rasterio.warp import reproject, Resampling
-from shapely.geometry import mapping, shape
-from shapely.ops import unary_union
 
 WCS_URL    = "https://ows.emodnet-bathymetry.eu/wcs"
 COVERAGE   = "emodnet:mean"
@@ -294,25 +292,18 @@ def main():
         json.dump({"type": "FeatureCollection", "features": place_features}, f)
     print(f"Saved populated places → {PLACES_OUT}  ({len(place_features)} features)")
 
-    # --- 5. OSM administrative city/town boundaries (clipped to GSHHG land) ---
+    # --- 5. OSM administrative city/town boundaries ---
     osm_urban = _fetch_osm_urban()
-    print("Intersecting OSM urban boundaries with GSHHG land …")
-    land_union = unary_union([shape(g) for g in land_shapes])
+    print("Processing OSM urban boundaries …")
     urban_features = []
     for feat in osm_urban.get("features", []):
         geom = feat.get("geometry")
         if geom is None:
             continue
-        try:
-            clipped = shape(geom).intersection(land_union)
-        except Exception:
-            continue
-        if clipped.is_empty:
-            continue
         props = feat.get("properties") or {}
         urban_features.append({
             "type": "Feature",
-            "geometry": mapping(clipped),
+            "geometry": geom,
             "properties": {
                 "name":        props.get("name"),
                 "place":       props.get("place"),
