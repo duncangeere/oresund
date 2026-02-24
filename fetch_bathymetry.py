@@ -8,6 +8,7 @@ Outputs: data/oresund_bathymetry.tif          (GeoTIFF, raw depth in metres)
          data/oresund_bathymetry_sea.tif      (GeoTIFF, land masked out)
          data/oresund_land.geojson            (GSHHG full-resolution land polygons)
          data/oresund_populated_places.geojson (NE point features with population)
+         data/oresund_tatort_points.geojson   (GeoNames SE+DK populated place points)
 
 Resolution: 3508 × 4009 px — A3 portrait at 150 dpi, preserving the
 geographic degree aspect ratio (1.40° wide × 1.60° tall → w/h = 0.875).
@@ -60,6 +61,11 @@ NE_POPULATED_PLACES_URL = (
 )
 # OVERPASS_URL = "https://overpass-api.de/api/interpreter"
 
+# GeoNames country dumps — SE and DK cover the full Öresund strait
+# https://download.geonames.org/export/dump/
+GEONAMES_BASE_URL  = "https://download.geonames.org/export/dump/"
+GEONAMES_COUNTRIES = ["SE", "DK"]
+
 DATA_DIR     = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 TIFF_OUT     = os.path.join(DATA_DIR, "oresund_bathymetry.tif")
 TIFF_SEA_OUT = os.path.join(DATA_DIR, "oresund_bathymetry_sea.tif")
@@ -69,6 +75,7 @@ NE_PP_SHP    = os.path.join(DATA_DIR, "ne_10m_populated_places.shp")
 # OSM_URBAN_CACHE = os.path.join(DATA_DIR, "osm_urban_boundaries.geojson")
 PLACES_OUT   = os.path.join(DATA_DIR, "oresund_populated_places.geojson")
 # URBAN_OUT    = os.path.join(DATA_DIR, "oresund_urban_areas.geojson")
+TATORT_OUT   = os.path.join(DATA_DIR, "oresund_tatort_points.geojson")
 
 
 def _bbox_tuple():
@@ -139,6 +146,35 @@ def _ensure_gshhg():
                 with zf.open(member) as src, open(target, "wb") as dst:
                     dst.write(src.read())
     print(f"Extracted GSHHS_f_L1 files → {DATA_DIR}")
+
+
+def _ensure_geonames(country_code):
+    """Download and extract a GeoNames country TSV to DATA_DIR if not cached.
+
+    Returns the path to the extracted .txt file.
+    GeoNames TSV columns (tab-separated, no header):
+      0 geonameid, 1 name, 2 asciiname, 3 alternatenames,
+      4 latitude, 5 longitude, 6 feature_class, 7 feature_code,
+      8 country_code, 9 cc2, 10-13 admin codes, 14 population,
+      15 elevation, 16 dem, 17 timezone, 18 modification_date
+    """
+    txt_path = os.path.join(DATA_DIR, f"{country_code}.txt")
+    if os.path.exists(txt_path):
+        print(f"Using cached GeoNames {country_code}: {txt_path}")
+        return txt_path
+    url = f"{GEONAMES_BASE_URL}{country_code}.zip"
+    print(f"Downloading GeoNames {country_code} data …")
+    r = requests.get(url, timeout=120, stream=True)
+    r.raise_for_status()
+    zip_data = io.BytesIO()
+    for chunk in r.iter_content(65536):
+        zip_data.write(chunk)
+    zip_data.seek(0)
+    with zipfile.ZipFile(zip_data) as zf:
+        with zf.open(f"{country_code}.txt") as src, open(txt_path, "wb") as dst:
+            dst.write(src.read())
+    print(f"Extracted {country_code}.txt → {DATA_DIR}")
+    return txt_path
 
 
 # def _fetch_osm_urban():
@@ -293,8 +329,46 @@ def main():
         json.dump({"type": "FeatureCollection", "features": place_features}, f)
     print(f"Saved populated places → {PLACES_OUT}  ({len(place_features)} features)")
 
-    # --- 5. OSM administrative city/town boundaries (clipped to GSHHG land) ---
-    # Commented out: approach not working. Replace with tätorter point data.
+    # --- 5. GeoNames tätorter / populated place points (SE + DK) ---
+    # GeoNames feature class P covers all populated places; we exclude PPLX
+    # (sections of a place, not standalone tätorter) and require population > 0.
+    # Properties: name, population, country_code, feature_code
+    tatort_features = []
+    for country in GEONAMES_COUNTRIES:
+        txt_path = _ensure_geonames(country)
+        with open(txt_path, encoding="utf-8") as f:
+            for line in f:
+                fields = line.rstrip("\n").split("\t")
+                if len(fields) < 15:
+                    continue
+                if fields[6] != "P" or fields[7] == "PPLX":
+                    continue
+                try:
+                    lat = float(fields[4])
+                    lon = float(fields[5])
+                    population = int(fields[14])
+                except ValueError:
+                    continue
+                if population <= 0:
+                    continue
+                if not (min_lon <= lon <= max_lon and min_lat <= lat <= max_lat):
+                    continue
+                tatort_features.append({
+                    "type": "Feature",
+                    "geometry": {"type": "Point", "coordinates": [lon, lat]},
+                    "properties": {
+                        "name":         fields[1],
+                        "population":   population,
+                        "country_code": fields[8],
+                        "feature_code": fields[7],
+                    },
+                })
+    with open(TATORT_OUT, "w", encoding="utf-8") as f:
+        json.dump({"type": "FeatureCollection", "features": tatort_features}, f,
+                  ensure_ascii=False)
+    print(f"Saved tätorter points → {TATORT_OUT}  ({len(tatort_features)} features)")
+
+    # --- (OSM administrative city/town boundaries — commented out, approach not working) ---
     # osm_urban = _fetch_osm_urban()
     # print("Intersecting OSM urban boundaries with GSHHG land …")
     # land_union = unary_union([shape(g) for g in land_shapes])
